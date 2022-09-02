@@ -1,0 +1,23 @@
+---
+project_1:
+  sg:
+    mandatory_tags: ["Team", "Department"]
+    alert_if_not_used: True
+    ingress:
+      forbid_cidrs: ["0.0.0.0/0", "100.64.0.0/10"]
+      forbid_cidrs_match_subnets: False
+      max_netmask_allowed: 16
+      forbid_tcp_port: [20, 21, 23, 25, 137, 139, 445]
+      forbid_udp_port: []
+      max_number_port_per_rule: 2
+      forbid_all_ports: True
+      forbid_all_protocols: True
+    egress:
+      forbid_cidrs: ["0.0.0.0/0"]
+      forbid_cidrs_match_subnets: False
+    ignore_sg_ids:
+      - ad8b5502-fef5-4cb4-9950-9bbbb701a7f7 # default
+  server:
+    mandatory_tags: ["Team", "Department"]
+    mandatory_metadata: []
+    ignore_server_ids: []
