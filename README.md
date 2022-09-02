@@ -33,15 +33,15 @@ my_tenant_1:
     egress:
       forbid_cidrs: ["0.0.0.0/0"]
       forbid_cidrs_exactly_match: False
-	ignore_sg_ids:
-	  - 3f23dbb4-998e-4cf7-b996-08888ce2cfaf # default
+    ignore_sg_ids:
+      - 3f23dbb4-998e-4cf7-b996-08888ce2cfaf # default
   server:
     mandatory_tags: ["Team", "Department"]
     mandatory_metadata: []
 my_tenant_2:
   sg:
     mandatory_tags: ["Department"]
-	...
+  ...
 ```
 
 # Example
@@ -65,5 +65,5 @@ $ pip install os-snitch
 
 # Development mode
 ```bash
-$ python setup.py develop --user
+$ pip install -e .
 ```
