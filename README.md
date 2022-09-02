@@ -1,6 +1,6 @@
 # os-snitch - OpenStack compliance rules checker
 
-![Build](https://github.com/thobiast/openstack-snitch/workflows/build/badge.svg)
+[![Build and Test](https://github.com/thobiast/openstack-snitch/actions/workflows/build.yml/badge.svg?event=push)](https://github.com/thobiast/openstack-snitch/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
