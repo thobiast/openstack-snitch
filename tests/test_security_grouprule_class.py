@@ -3,7 +3,7 @@
 
 import pytest
 
-from snitch.resources.security_group import SecurityGroupRule
+from openstack_snitch.resources.security_group import SecurityGroupRule
 
 
 @pytest.mark.parametrize(

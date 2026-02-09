@@ -3,8 +3,8 @@
 
 import pytest
 
-from snitch.resources.security_group import SecurityGroup
-from snitch.violation.violation import Violation
+from openstack_snitch.resources.security_group import SecurityGroup
+from openstack_snitch.violation.violation import Violation
 
 
 @pytest.mark.parametrize(
