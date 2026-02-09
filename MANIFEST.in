@@ -1,7 +1,0 @@
-include requirements.txt
-include LICENSE
-include pyproject.toml
-include *.md
-include *.txt
-include *.yaml
-graft src

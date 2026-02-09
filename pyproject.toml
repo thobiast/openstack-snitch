@@ -1,6 +1,28 @@
+[project]
+name = "os-snitch"
+description = "OpenStack compliance rules checker"
+readme = "README.md"
+license = {file = "LICENSE"}
+dynamic = ["version", "dependencies"]
+requires-python = ">=3.7"
+authors = [
+    {name = "Thobias Salazar Trevisan"},
+]
+
+[project.scripts]
+openstack-snitch = "openstack_snitch.main:main"
+
+[project.urls]
+"Homepage" = "https://github.com/thobiast/openstack-snitch"
+"Source" = "https://github.com/thobiast/openstack-snitch"
+
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = {attr = "openstack_snitch.__version__"}
+dependencies = {file = ["requirements.txt"]}
 
 [tool.black]
 line-length = 88
