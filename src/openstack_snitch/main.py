@@ -5,21 +5,38 @@ import argparse
 import logging
 import os
 import pprint
+import sys
+from dataclasses import dataclass
+from typing import Any
 
 import openstack
+from pydantic import ValidationError
 
 from .notification.notification import create_notification
 from .resources.security_group import SecurityGroup
 from .resources.server import Server
-from .utils.utils import color_dic, read_yaml_file, setup_logging
+from .utils.rules_schema import ComplianceRules, ProjectPolicy
+from .utils.utils import setup_logging
 
-LOG = setup_logging()
+
+@dataclass(frozen=True)
+class RunContext:
+    """
+    Execution context shared across checks.
+
+    Holds the selected project policy, an OpenStack connection, and
+    parsed command-line arguments.
+    """
+
+    project_policy: ProjectPolicy
+    os_conn: Any
+    args: argparse.Namespace
 
 
 ###########################################################################
 # Add command line arguments to argparse
 ###########################################################################
-def cli_argparse():
+def parse_args():
     epilog = """
     Example of use:
         %(prog)s --help
@@ -36,6 +53,16 @@ def cli_argparse():
         epilog=epilog,
     )
     parser.add_argument("--debug", action="store_true", dest="debug", help="debug flag")
+    parser.add_argument(
+        "--os-cloud",
+        help=(
+            "Name of the cloud to load from clouds.yaml. "
+            "(Default '%(default)s', which uses OS_* env vars)"
+        ),
+        type=str,
+        default="envvars",
+        required=False,
+    )
     parser.add_argument(
         "--compliance-file",
         dest="compliance_file",
@@ -64,15 +91,25 @@ def cli_argparse():
         help="Format to show violation on stdout",
     )
 
-    return parser
+    return parser.parse_args()
 
 
 ##############################################################################
 # Return a list with all security groups ids used
 ##############################################################################
-def return_all_used_sgs(os_conn):
+def get_used_security_group_ids(ctx):
+    """Return security group IDs currently in use by the project.
+
+    Args:
+        ctx: RunContext
+
+    Returns:
+        list: Unique security group IDs used by at least one port in the project.
+    """
+    logging.debug("Getting all security groups in use")
+
     all_used_sgs_ids = set()
-    for port in os_conn.network.ports(project_id=os_conn.current_project.id):
+    for port in ctx.os_conn.network.ports(project_id=ctx.os_conn.current_project.id):
         if port.security_group_ids:
             all_used_sgs_ids.update(port.security_group_ids)
 
@@ -82,98 +119,158 @@ def return_all_used_sgs(os_conn):
 #############################################################################
 # Check all security group rules
 #############################################################################
-def check_sg_compliance(os_conn, compliance_rules):
-    LOG.debug("%s", pprint.pformat(compliance_rules))
+def check_sg_compliance(ctx):
+    """Validate security groups in the project against the configured policy.
+
+    For each security group in the project:
+      - Skips ignored security group IDs.
+      - Validates mandatory tags.
+      - Optionally flags unused security groups (alert_if_not_used).
+      - Validates rule-level constraints
+
+    Args:
+        ctx: RunContext
+
+    Returns:
+        list: A flat list of Violation objects describing all issues found.
+    """
+    project_sg_rules = ctx.project_policy.sg
+    if project_sg_rules is None:
+        logging.warning(
+            "Skipping sg: no policy defined for project %s",
+            ctx.os_conn.current_project.name,
+        )
+        return []
+
+    logging.info(
+        "Starting Security Group compliance for project: %s",
+        ctx.os_conn.current_project.name,
+    )
+    logging.debug("Policy: %s", project_sg_rules.model_dump())
 
     # If alert_if_not_used option is enabled, get a list with all used sgs
-    all_used_sgs_ids = (
-        return_all_used_sgs(os_conn) if compliance_rules["alert_if_not_used"] else []
+    used_sg_ids = (
+        set(get_used_security_group_ids(ctx))
+        if project_sg_rules.alert_if_not_used
+        else set()
     )
 
-    sgs = []
-    for os_sg in os_conn.network.security_groups(project_id=os_conn.current_project.id):
-        LOG.debug(
-            "%s #########################################################%s",
-            color_dic["blue"],
-            color_dic["nocolor"],
-        )
-        if os_sg.id in compliance_rules["ignore_sg_ids"]:
-            LOG.debug("Ignoring sg: %s - %s", os_sg.id, os_sg.name)
+    all_violations = []
+    for os_sg in ctx.os_conn.network.security_groups(
+        project_id=ctx.os_conn.current_project.id
+    ):
+        if os_sg.id in project_sg_rules.ignore_sg_ids:
+            logging.debug("--- Skipping SG (ignored ID): %s (%s)", os_sg.name, os_sg.id)
             continue
-        LOG.debug(
-            "%s #### Checking rules for sg: %s - %s%s",
-            color_dic["blue"],
-            os_sg.id,
-            os_sg.name,
-            color_dic["nocolor"],
-        )
-        LOG.debug(
-            "%s #########################################################%s",
-            color_dic["blue"],
-            color_dic["nocolor"],
+
+        logging.info("--- Validating Security Group: %s (%s)", os_sg.name, os_sg.id)
+
+        securitygroup = SecurityGroup(ctx.os_conn.current_project.name, os_sg)
+        # Pass data via the specific resource context
+        securitygroup.check_compliance(
+            project_sg_rules, context={"used_sg_ids": used_sg_ids}
         )
 
-        securitygroup = SecurityGroup(os_conn.current_project.name, os_sg)
-        if compliance_rules["alert_if_not_used"]:
-            securitygroup.check_sg_not_used(all_used_sgs_ids)
-        securitygroup.check_sg_tags(compliance_rules["mandatory_tags"])
-        securitygroup.check_egress_rules(compliance_rules["egress"])
-        securitygroup.check_ingress_rules(compliance_rules["ingress"])
-        sgs.append(securitygroup)
+        violations = securitygroup.get_violations()
+        all_violations.extend(violations)
 
-        LOG.debug(
-            "%s#### Violation for %s %s%s",
-            color_dic["red"],
-            os_sg.name,
-            securitygroup.return_violations(),
-            color_dic["nocolor"],
-        )
+        if violations:
+            logging.debug("SG %s: found %d violations", os_sg.name, len(violations))
+        else:
+            logging.debug("SG %s: compliant", os_sg.name)
 
-    return sgs
+    logging.info(
+        "Security Groups compliance check complete. Total violations found: %d",
+        len(all_violations),
+    )
+    return all_violations
 
 
 #############################################################################
 # Check all servers rules
 #############################################################################
-def check_servers_compliance(os_conn, compliance_rules):
+def check_servers_compliance(ctx):
+    """Validate servers in the project against the configured policy.
 
-    servers = []
-    for os_server in os_conn.compute.servers(project_id=os_conn.current_project.id):
-        LOG.debug(
-            "%s #########################################################%s",
-            color_dic["blue"],
-            color_dic["nocolor"],
+    For each server in the project:
+      - Skips ignored server IDs.
+      - Validates mandatory tags.
+      - Validates mandatory metadata keys, if configured.
+
+    Args:
+        ctx: RunContext
+
+    Returns:
+        list: A flat list of Violation objects describing all issues found.
+    """
+    project_server_rules = ctx.project_policy.server
+    if project_server_rules is None:
+        logging.warning(
+            "Skipping server: no policy defined for project %s",
+            ctx.os_conn.current_project.name,
         )
-        if os_server.id in compliance_rules["ignore_server_ids"]:
-            LOG.debug("Ignoring sg: %s - %s", os_server.id, os_server.name)
+        return []
+
+    logging.info(
+        "Starting server compliance for project: %s", ctx.os_conn.current_project.name
+    )
+    logging.debug("Policy: %s", project_server_rules.model_dump())
+
+    all_violations = []
+    for os_server in ctx.os_conn.compute.servers(
+        project_id=ctx.os_conn.current_project.id
+    ):
+
+        if os_server.id in project_server_rules.ignore_server_ids:
+            logging.debug(
+                "--- Skipping server (ignored ID): %s (%s)",
+                os_server.name,
+                os_server.id,
+            )
             continue
-        LOG.debug(
-            "%s #### Checking rules for server: %s - %s%s",
-            color_dic["blue"],
-            os_server.id,
-            os_server.name,
-            color_dic["nocolor"],
-        )
-        server = Server(os_conn.current_project.name, os_server)
-        server.check_server_tags(compliance_rules["mandatory_tags"])
-        server.check_server_metadata(compliance_rules["mandatory_metadata"])
-        servers.append(server)
 
-    return servers
+        logging.info("--- Validating Server:: %s (%s)", os_server.name, os_server.id)
+
+        server = Server(ctx.os_conn.current_project.name, os_server)
+        server.check_compliance(project_server_rules)
+
+        violations = server.get_violations()
+        all_violations.extend(violations)
+
+        if violations:
+            logging.debug(
+                "Server %s: found %d violations", os_server.name, len(violations)
+            )
+        else:
+            logging.debug("Server %s: compliant", os_server.name)
+
+    logging.info(
+        "Server compliance check complete. Total violations found: %d",
+        len(all_violations),
+    )
+    return all_violations
 
 
 ##############################################################################
 # Send violations
 ##############################################################################
-def send_violations(cmd_options_parsed, violations):
-    if not cmd_options_parsed.sendto:
-        LOG.debug("Notification system not specified.")
+def send_violations(ctx, violations):
+    """Send violations to configured notification backends.
+
+    Notification backends are selected via CLI.
+
+    Args:
+        ctx: RunContext
+        violations: List of Violation objects to be sent.
+    """
+    if not ctx.args.sendto:
+        logging.debug("Notification system not specified.")
         return
 
-    conf = {"stdout_fmt": cmd_options_parsed.stdout_fmt}
+    conf = {"stdout_fmt": ctx.args.stdout_fmt}
 
-    for i in cmd_options_parsed.sendto:
-        LOG.debug("Sending violations to %s", i)
+    for i in ctx.args.sendto:
+        logging.debug("Sending violations to %s", i)
         notification = create_notification(i, **conf)
         notification.send_violations(violations)
 
@@ -182,42 +279,57 @@ def send_violations(cmd_options_parsed, violations):
 # Main
 ##############################################################################
 def main():
+    """
+    Main entry point for the script.
+    """
 
-    # disable openstacksdk logs
+    args = parse_args()
+    setup_logging(log_level=logging.DEBUG if args.debug else logging.INFO)
+    logging.debug("CMD line args: %s", args)
+
+    # Load and validate rules
+    try:
+        rules = ComplianceRules.from_yaml_file(args.compliance_file)
+    except ValidationError as e:
+        logging.error("Invalid compliance rules:\n%s", e)
+        sys.exit(2)
+    # pylint: disable=broad-exception-caught
+    except Exception as e:
+        logging.error("Failed to load compliance rules: %s", e)
+        sys.exit(2)
+
+    # Connect to OpenStack
     openstack.enable_logging(debug=False)
+    logging.debug("Create openstack connect to cloud: '%s'", args.os_cloud)
+    try:
+        os_conn = openstack.connect(cloud=args.os_cloud)
+        project_name = os_conn.current_project.name
+    except Exception as exc:
+        logging.debug("Openstack connection configuration failed:", exc_info=True)
+        raise RuntimeError(f"Failed to connect to OpenStack: {exc}") from exc
 
-    cmd_options = cli_argparse()
-    # openstacksdk parser
-    os_conn = openstack.connect(options=cmd_options)
+    # Check if there is policy defined for the project
+    if project_name not in rules.root:
+        logging.warning("No policy defined for project: %s", project_name)
+        return
 
-    # parser arguments
-    cmd_options_parsed = cmd_options.parse_args()
-
-    if not cmd_options_parsed.debug:
-        logging.getLogger("snitch").setLevel(logging.CRITICAL)
-
-    # load compliance rules
-    compliance_rules = read_yaml_file(cmd_options_parsed.compliance_file)[
-        os_conn.current_project.name
-    ]
-    LOG.debug("compliance_rules: %s", pprint.pformat(compliance_rules))
-
-    sgs = (
-        check_sg_compliance(os_conn, compliance_rules["sg"])
-        if "sg" in cmd_options_parsed.resource
-        else []
+    ctx = RunContext(
+        os_conn=os_conn, args=args, project_policy=rules.root[project_name]
     )
-    servers = (
-        check_servers_compliance(os_conn, compliance_rules["server"])
-        if "server" in cmd_options_parsed.resource
-        else []
+    logging.debug(
+        "project_policy for project %s: %s",
+        project_name,
+        pprint.pformat(ctx.project_policy),
     )
 
-    # compute all violations into a list
-    violations_by_resource = [v.return_violations() for v in sgs + servers]
-    violations = [item for elem in violations_by_resource for item in elem]
+    # Execute checks
+    violations = []
+    if "sg" in args.resource:
+        violations.extend(check_sg_compliance(ctx))
+    if "server" in args.resource:
+        violations.extend(check_servers_compliance(ctx))
 
-    send_violations(cmd_options_parsed, violations)
+    send_violations(ctx, violations)
 
 
 ##############################################################################

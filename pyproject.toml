@@ -2,7 +2,7 @@
 name = "os-snitch"
 description = "OpenStack compliance rules checker"
 readme = "README.md"
-license = {file = "LICENSE"}
+license-files = ["LICENSE"]
 dynamic = ["version", "dependencies"]
 requires-python = ">=3.7"
 authors = [

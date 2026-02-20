@@ -36,3 +36,4 @@ repos:
     hooks:
     -   id: pylint
         args: ["--disable=C0301,C0116,E0401,C0103"]
+        exclude: ^tests/

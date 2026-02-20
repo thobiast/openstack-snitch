@@ -4,6 +4,7 @@
 import logging
 
 from rich.console import Console
+from rich.pretty import Pretty
 from rich.table import Table
 
 from .notificationbase import NotificationBase
@@ -44,6 +45,7 @@ class Stdout(NotificationBase):
         table.add_column("Resource Type", justify="center", style="green")
         table.add_column("Resource Created at", justify="right", style="green")
         table.add_column("Violation", justify="left", style="green")
+        table.add_column("Details", justify="left", style="green")
 
         for v in violations:
             table.add_row(
@@ -51,7 +53,8 @@ class Stdout(NotificationBase):
                 v.resource_name,
                 v.resource_type,
                 v.resource_created_at,
-                v.message,
+                v.code,
+                Pretty(v.details),
             )
 
         console = Console()

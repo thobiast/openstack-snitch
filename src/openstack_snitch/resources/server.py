@@ -1,83 +1,51 @@
 # -*- coding: utf-8 -*-
-"""Module do handle server compliance checks."""
+"""Module defining the base resource for all compliance checks"""
 
-import logging
-
-from ..violation.violation import Violation
-
-LOG = logging.getLogger(__name__)
-
-VIOLATION_TYPE = "Server"
-SERVER_MISSING_METADATA = "Missing metadata key"
-SERVER_MISSING_TAGS = "Missing tags"
+from ..violation.violation import ViolationCode
+from .base_resource import BaseResource
 
 
-class Server:
-    """Security Group handler."""
+class Server(BaseResource):
+    """Compliance checker for Nova servers.
+
+    This class evaluates a single server against the project policy.
+    """
 
     def __init__(self, project_name, os_server):
+        """Create a server compliance checker for one server.
+
+        Args:
+            project_name: Name of the OpenStack project being checked.
+            os_server: OpenStack SDK server object.
         """
-        Class to handle Servers checks.
+        super().__init__(project_name, os_server, "Server")
 
-        Params:
-            project_name: (str) Project name
-            osg_sg: (openstack.compute.v2.server) instance
+    def check_compliance(self, rules, *, context=None):
+        """Run all configured server checks.
 
+        Checks:
+          - Mandatory tags.
+          - Mandatory metadata keys (if configured).
+
+        Args:
+            project_server_rules: Server policy section loaded from compliance rules.
         """
-        self.project_name = project_name
-        self.os_server = os_server
-        self.name = os_server.name
-        self.id = os_server.id
-        self.violations = []
+        project_server_rules = rules
+        self._check_mandatory_tags(
+            project_server_rules.mandatory_tags, ViolationCode.SERVER_MISSING_TAG
+        )
 
-    def check_server_tags(self, mandatory_tags):
-        """Verify if server has all mandatory tags."""
-        missing_tags = [i for i in mandatory_tags if i not in self.os_server.tags]
-        if missing_tags:
-            message = f"{SERVER_MISSING_TAGS} {', '.join(missing_tags)}"
-            # pylint: disable=duplicate-code
-            self.violations.append(
-                Violation(
-                    self.project_name,
-                    VIOLATION_TYPE,
-                    self.name,
-                    self.id,
-                    self.os_server.created_at,
-                    message,
+        # Check metadata
+        if project_server_rules.mandatory_metadata:
+            metadata = getattr(self.os_resource, "metadata", None) or {}
+            missing = [
+                m for m in project_server_rules.mandatory_metadata if m not in metadata
+            ]
+            if missing:
+                self.add_violation(
+                    ViolationCode.SERVER_MISSING_METADATA,
+                    details={"metadata": f"{','.join(missing)}"},
                 )
-            )
-            LOG.debug(
-                "Server id: %s - Violation of server tags: missing tags: %s",
-                self.id,
-                missing_tags,
-            )
-
-    def check_server_metadata(self, mandatory_metadata):
-        """Verify if server has all mandatory metadata."""
-        server_metadata = self.os_server.metadata.keys()
-        missing_metadata = [i for i in mandatory_metadata if i not in server_metadata]
-        if missing_metadata:
-            message = f"{SERVER_MISSING_METADATA} {', '.join(missing_metadata)}"
-            # pylint: disable=duplicate-code
-            self.violations.append(
-                Violation(
-                    self.project_name,
-                    VIOLATION_TYPE,
-                    self.name,
-                    self.id,
-                    self.os_server.created_at,
-                    message,
-                )
-            )
-            LOG.debug(
-                "Server id: %s - Violation of server metadata: missing metadata: %s",
-                self.id,
-                missing_metadata,
-            )
-
-    def return_violations(self):
-        """Return list with all Violation instances for the server."""
-        return list(set(self.violations))
 
 
 # vim: ts=4

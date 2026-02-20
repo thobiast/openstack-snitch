@@ -4,69 +4,61 @@
 import pytest
 
 from openstack_snitch.resources.server import Server
-from openstack_snitch.violation.violation import Violation
+from openstack_snitch.violation.violation import ViolationCode
+
+
+def _find_violations(obj, code):
+    return [v for v in obj._violations if v.code == code]
 
 
 @pytest.mark.parametrize(
-    "server_compliance_rules_tags",
+    "server_policy_tags",
     [["tag1"], ["tag2"], ["tag3", "tag4"]],
     indirect=True,
 )
-def test_check_server_tags(server_compliance_rules_tags, os_server):
-    tags_that_exists_on_server = ["tag1"]
-    os_server.tags = tags_that_exists_on_server
-
+def test_check_server_tags(server_policy_tags, os_server):
+    os_server.tags = ["tag1"]
     server = Server("my_project", os_server)
-    server.check_server_tags(server_compliance_rules_tags)
 
-    missing_tags = [i for i in server_compliance_rules_tags if i not in os_server.tags]
-    if missing_tags:
-        result = [
-            Violation(
-                project_name="my_project",
-                resource_type="Server",
-                resource_name=server.name,
-                resource_id=server.id,
-                resource_created_at=os_server.created_at,
-                message=f"Missing tags {', '.join(missing_tags)}",
-            )
-        ]
-    else:
-        result = []
+    server.check_compliance(server_policy_tags)
 
-    assert server.violations == result
+    missing = [t for t in server_policy_tags.mandatory_tags if t not in os_server.tags]
+    vlist = _find_violations(server, ViolationCode.SERVER_MISSING_TAG)
+
+    if not missing:
+        assert vlist == []
+        return
+
+    assert len(vlist) == 1
+    v = vlist[0]
+    assert "tag" in v.details
+    got_missing = [t.strip() for t in v.details["tag"].split(",") if t.strip()]
+    assert sorted(got_missing) == sorted(missing)
 
 
 @pytest.mark.parametrize(
-    "server_compliance_rules_metadata", [["m1"], ["m2"], ["m3", "m4"]], indirect=True
+    "required_keys, metadata, expect_missing",
+    [
+        (["m1"], {"m1": "xxxx"}, False),
+        (["m2"], {"m1": "xxxx"}, True),
+        (["m3", "m4"], {"m1": "xxxx"}, True),
+    ],
 )
-def test_check_server_metadata_keys(server_compliance_rules_metadata, os_server):
-    metadata_that_exists_on_server = {"m1": "xxxx"}
-    os_server.metadata = metadata_that_exists_on_server
+def test_check_server_metadata_keys(
+    server_policy, os_server, required_keys, metadata, expect_missing
+):
+    os_server.metadata = metadata
+    server_policy.mandatory_metadata = required_keys
 
     server = Server("my_project", os_server)
-    server.check_server_metadata(server_compliance_rules_metadata)
+    server.check_compliance(server_policy)
 
-    missing_metadata = [
-        i
-        for i in server_compliance_rules_metadata
-        if i not in os_server.metadata.keys()
-    ]
-    if missing_metadata:
-        result = [
-            Violation(
-                project_name="my_project",
-                resource_type="Server",
-                resource_id=server.id,
-                resource_name=server.name,
-                resource_created_at=os_server.created_at,
-                message=f"Missing metadata key {', '.join(missing_metadata)}",
-            )
-        ]
-    else:
-        result = []
+    vlist = _find_violations(server, ViolationCode.SERVER_MISSING_METADATA)
+    assert bool(vlist) == expect_missing
 
-    assert server.violations == result
-
-
-# vim: ts=4
+    if expect_missing:
+        # Adjust this key to match your implementation for metadata checks:
+        # e.g. details={"metadata": "m2"} or {"metadata_key": "..."} etc.
+        missing = [k for k in required_keys if k not in metadata]
+        got = [k.strip() for k in vlist[0].details["metadata"].split(",") if k.strip()]
+        assert sorted(got) == sorted(missing)
